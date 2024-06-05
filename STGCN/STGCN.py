@@ -5,6 +5,7 @@ import os
 import pickle
 import random
 import time
+import logging
 from tqdm import tqdm
 
 os.chdir('STGCN')
@@ -21,25 +22,7 @@ from torch.autograd import Variable
 from torch.utils.data import DataLoader, TensorDataset
 
 from model.models import STGCNChebGraphConv, STGCNGraphConv
-from utils import calc_gso, calc_chebynet_gso, evaluate_metric, evaluate_model, EarlyStopping, set_env
-
-def data_transform(data, n_his, n_pred, device):
-    # produce data slices for x_data and y_data
-
-    n_vertex = data.shape[1]
-    len_record = data.shape[0]
-    num = len_record - n_his - n_pred
-    
-    x = np.zeros([num, 1, n_his, n_vertex])
-    y = np.zeros([num, n_vertex])
-    
-    for i in range(num):
-        head = i
-        tail = i + n_his
-        x[i, :, :, :] = data[head: tail].reshape(1, n_his, n_vertex) # x : (num, 1, n_his, n_vertex)
-        y[i] = data[tail + n_pred - 1] # y : (num, n_vertex)
-
-    return torch.Tensor(x).to(device), torch.Tensor(y).to(device)
+from utils import calc_gso, calc_chebynet_gso, evaluate_metric, evaluate_model, EarlyStopping, set_env, data_transform
 
 # Load data
 adj_mx = pd.read_csv('data/PeMSD7_W_228.csv', header=None)
@@ -49,8 +32,6 @@ adj_mx = torch.from_numpy(adj_mx)
 data = pd.read_csv('data/PeMSD7_V_228.csv', header=None)
 data = np.array(data)
 data = torch.from_numpy(data)
-
-n_vertex = data.shape[1]
 
 # Arguments
 
@@ -72,8 +53,7 @@ def get_parameters():
     parser.add_argument('--lr', type=float, default=0.001, help='learning rate')
     parser.add_argument('--weight_decay_rate', type=float, default=0.0005, help='weight decay (L2 penalty)')
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--epochs', type=int, default=10000, help='epochs, default as 10000')
-    parser.add_argument('--opt', type=str, default='adam', help='optimizer, default as adam')
+    parser.add_argument('--epochs', type=int, default=100, help='epochs, default as 100')
     parser.add_argument('--step_size', type=int, default=10)
     parser.add_argument('--gamma', type=float, default=0.95)
     parser.add_argument('--patience', type=int, default=30, help='early stopping patience')
@@ -135,8 +115,6 @@ train = scaler.fit_transform(train)
 val = scaler.fit_transform(val)
 test = scaler.fit_transform(test)
 
-print(args.n_his, args.n_pred)
-
 x_train, y_train = data_transform(train, args.n_his, args.n_pred, device)
 x_val, y_val = data_transform(val, args.n_his, args.n_pred, device)
 x_test, y_test = data_transform(test, args.n_his, args.n_pred, device)
@@ -148,4 +126,72 @@ val_iter = DataLoader(dataset=val_data, batch_size=args.batch_size, shuffle=Fals
 test_data = TensorDataset(x_test, y_test)
 test_iter = DataLoader(dataset=test_data, batch_size=args.batch_size, shuffle=False)
 
-print('Data preprocessing finished.')
+# Model
+
+loss = nn.MSELoss()
+early_stopping = EarlyStopping(patience=args.patience)
+
+if args.graph_conv_type == 'cheb_graph_conv':
+    model = STGCNChebGraphConv(args, blocks, n_vertex).to(device)
+else:
+    model = STGCNGraphConv(args, blocks, n_vertex).to(device)
+
+optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay_rate)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
+
+# Training
+
+def train(loss, args, optimizer, scheduler, es, model, train_iter, val_iter):
+    for epoch in range(args.epochs):
+        l_sum, n = 0.0, 0  # 'l_sum' is epoch sum loss, 'n' is epoch instance number
+        model.train()
+        for x, y in tqdm(train_iter):
+            y_pred = model(x).view(len(x), -1)  # [batch_size, num_nodes]
+            l = loss(y_pred, y)
+            optimizer.zero_grad()
+            l.backward()
+            optimizer.step()
+            l_sum += l.item() * y.shape[0]
+            n += y.shape[0]
+        scheduler.step()
+        val_loss = val(model, val_iter)
+        # GPU memory usage
+        gpu_mem_alloc = torch.cuda.max_memory_allocated() / 1000000 if torch.cuda.is_available() else 0
+        print('Epoch: {:03d} | Lr: {:.20f} |Train loss: {:.6f} | Val loss: {:.6f} | GPU occupy: {:.6f} MiB'.\
+            format(epoch+1, optimizer.param_groups[0]['lr'], l_sum / n, val_loss, gpu_mem_alloc))
+
+        if es.step(val_loss):
+            print('Early stopping.')
+            break
+
+@torch.no_grad()
+def val(model, val_iter):
+    model.eval()
+    l_sum, n = 0.0, 0
+    for x, y in val_iter:
+        y_pred = model(x).view(len(x), -1)
+        l = loss(y_pred, y)
+        l_sum += l.item() * y.shape[0]
+        n += y.shape[0]
+    return torch.tensor(l_sum / n)
+
+@torch.no_grad() 
+def test(zscore, loss, model, test_iter, args):
+    model.eval()
+    test_MSE = utility.evaluate_model(model, loss, test_iter)
+    test_MAE, test_RMSE, test_WMAPE = utility.evaluate_metric(model, test_iter, zscore)
+    print(f'Dataset {args.dataset:s} | Test loss {test_MSE:.6f} | MAE {test_MAE:.6f} | RMSE {test_RMSE:.6f} | WMAPE {test_WMAPE:.8f}')
+
+
+if __name__ == '__main__':
+    # Log
+    logging.basicConfig(level=logging.INFO)
+
+    # Training
+    train(loss, args, optimizer, scheduler, early_stopping, model, train_iter, val_iter)
+
+    # Testing
+    test(scaler, loss, model, test_iter, args)
+
+# Save model
+torch.save(model.state_dict(), 'model.pth')

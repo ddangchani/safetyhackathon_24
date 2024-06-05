@@ -188,3 +188,20 @@ def set_env(seed):
     torch.backends.cudnn.deterministic = True
     # torch.use_deterministic_algorithms(True)
 
+def data_transform(data, n_his, n_pred, device):
+    # produce data slices for x_data and y_data
+
+    n_vertex = data.shape[1]
+    len_record = data.shape[0]
+    num = len_record - n_his - n_pred
+    
+    x = np.zeros([num, 1, n_his, n_vertex])
+    y = np.zeros([num, n_vertex])
+    
+    for i in range(num):
+        head = i
+        tail = i + n_his
+        x[i, :, :, :] = data[head: tail].reshape(1, n_his, n_vertex) # x : (num, 1, n_his, n_vertex)
+        y[i] = data[tail + n_pred - 1] # y : (num, n_vertex)
+
+    return torch.Tensor(x).to(device), torch.Tensor(y).to(device)
