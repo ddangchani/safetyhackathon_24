@@ -198,22 +198,3 @@ print(f'x_train.shape: {x_train.shape}')
 
 # # Save model
 # torch.save(model.state_dict(), 'model.pth')
-
-# Load model
-model = STGCNChebGraphConv(args, blocks, n_vertex).to(device)
-
-model.load_state_dict(torch.load('model.pth'))
-print('Model loaded')
-
-# Testing : Given the first 12 time intervals, predict the next 3 time intervals
-first = data[:16]
-first_12_time_intervals = scaler.fit_transform(first)
-x_test, y_test = data_transform(first_12_time_intervals, args.n_his, args.n_pred, device) 
-y_pred = model(x_test, gso).view(len(x_test), -1)
-y_pred = y_pred.cpu().detach().numpy()
-
-# Plot
-plt.plot(first_12_time_intervals, label='First 12 time intervals')
-plt.plot(y_pred, label='Predicted next 3 time intervals')
-plt.legend()
-plt.show()
