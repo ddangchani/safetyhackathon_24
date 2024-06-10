@@ -100,7 +100,7 @@ if args.graph_conv_type == 'cheb_graph_conv':
 
 gso = gso.toarray()
 gso = gso.astype(dtype=np.float32)
-args.gso = torch.from_numpy(gso).to(device)
+gso = torch.from_numpy(gso).to(device)
 
 data_col = data.shape[0]
 val_and_test_rate = 0.15
@@ -145,7 +145,7 @@ def train(loss, args, optimizer, scheduler, es, model, train_iter, val_iter):
         l_sum, n = 0.0, 0  # 'l_sum' is epoch sum loss, 'n' is epoch instance number
         model.train()
         for x, y in tqdm(train_iter):
-            y_pred = model(x).view(len(x), -1)  # [batch_size, num_nodes]
+            y_pred = model(x, gso).view(len(x), -1)  # [batch_size, num_nodes]
             l = loss(y_pred, y)
             optimizer.zero_grad()
             l.backward()
@@ -168,7 +168,7 @@ def val(model, val_iter):
     model.eval()
     l_sum, n = 0.0, 0
     for x, y in val_iter:
-        y_pred = model(x).view(len(x), -1)
+        y_pred = model(x, gso).view(len(x), -1)
         l = loss(y_pred, y)
         l_sum += l.item() * y.shape[0]
         n += y.shape[0]
@@ -203,12 +203,13 @@ print(f'x_train.shape: {x_train.shape}')
 model = STGCNChebGraphConv(args, blocks, n_vertex).to(device)
 
 model.load_state_dict(torch.load('model.pth'))
+print('Model loaded')
 
 # Testing : Given the first 12 time intervals, predict the next 3 time intervals
 first = data[:16]
 first_12_time_intervals = scaler.fit_transform(first)
 x_test, y_test = data_transform(first_12_time_intervals, args.n_his, args.n_pred, device) 
-y_pred = model(x_test).view(len(x_test), -1)
+y_pred = model(x_test, gso).view(len(x_test), -1)
 y_pred = y_pred.cpu().detach().numpy()
 
 # Plot

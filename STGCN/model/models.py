@@ -29,8 +29,8 @@ class STGCNChebGraphConv(nn.Module):
         super(STGCNChebGraphConv, self).__init__()
         modules = []
         for l in range(len(blocks) - 3):
-            modules.append(layers.STConvBlock(args.Kt, args.Ks, n_vertex, blocks[l][-1], blocks[l+1], args.act_func, args.graph_conv_type, args.gso, args.enable_bias, args.droprate))
-        self.st_blocks = nn.Sequential(*modules)
+            modules.append(layers.STConvBlock(args.Kt, args.Ks, n_vertex, blocks[l][-1], blocks[l+1], args.act_func, args.graph_conv_type, args.enable_bias, args.droprate))
+        self.st_blocks = nn.ModuleList(modules)
         Ko = args.n_his - (len(blocks) - 3) * 2 * (args.Kt - 1)
         self.Ko = Ko
         if self.Ko > 1:
@@ -43,8 +43,9 @@ class STGCNChebGraphConv(nn.Module):
             self.silu = nn.SiLU()
             self.dropout = nn.Dropout(p=args.droprate)
 
-    def forward(self, x):
-        x = self.st_blocks(x)
+    def forward(self, x, gso):
+        for l in range(len(self.st_blocks)):
+            x = self.st_blocks[l](x, gso)
         if self.Ko > 1:
             x = self.output(x)
         elif self.Ko == 0:
@@ -95,7 +96,7 @@ class STGCNGraphConv(nn.Module):
             self.silu = nn.SiLU()
             self.do = nn.Dropout(p=args.droprate)
 
-    def forward(self, x):
+    def forward(self, x, gso):
         x = self.st_blocks(x)
         if self.Ko > 1:
             x = self.output(x)

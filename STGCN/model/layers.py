@@ -123,12 +123,11 @@ class TemporalConvLayer(nn.Module):
         return x
 
 class ChebGraphConv(nn.Module):
-    def __init__(self, c_in, c_out, Ks, gso, bias):
+    def __init__(self, c_in, c_out, Ks, bias):
         super(ChebGraphConv, self).__init__()
         self.c_in = c_in
         self.c_out = c_out
         self.Ks = Ks # Chebyshev polynomial order
-        self.gso = gso # Graph Shift Operator
         self.weight = nn.Parameter(torch.FloatTensor(Ks, c_in, c_out))
         if bias:
             self.bias = nn.Parameter(torch.FloatTensor(c_out))
@@ -143,7 +142,7 @@ class ChebGraphConv(nn.Module):
             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
             init.uniform_(self.bias, -bound, bound)
     
-    def forward(self, x):
+    def forward(self, x, gso):
         # bs, c_in, ts, n_vertex = x.shape
         x = torch.permute(x, (0, 2, 3, 1)) # to [bs, ts, n_vertex, c_in]
 
@@ -154,14 +153,14 @@ class ChebGraphConv(nn.Module):
             x_list = [x_0]
         elif self.Ks - 1 == 1:
             x_0 = x
-            x_1 = torch.einsum('hi,btij->bthj', self.gso, x) # self.gso : h x i, x : b x t x i x j -> b x t x h x j
+            x_1 = torch.einsum('hi,btij->bthj', gso, x) # gso : h x i, x : b x t x i x j -> b x t x h x j
             x_list = [x_0, x_1]
         elif self.Ks - 1 >= 2:
             x_0 = x
-            x_1 = torch.einsum('hi,btij->bthj', self.gso, x)
+            x_1 = torch.einsum('hi,btij->bthj', gso, x)
             x_list = [x_0, x_1]
             for k in range(2, self.Ks):
-                x_list.append(torch.einsum('hi,btij->bthj', 2 * self.gso, x_list[k - 1]) - x_list[k - 2])
+                x_list.append(torch.einsum('hi,btij->bthj', 2 * gso, x_list[k - 1]) - x_list[k - 2])
         
         x = torch.stack(x_list, dim=2)
 
@@ -175,11 +174,10 @@ class ChebGraphConv(nn.Module):
         return cheb_graph_conv
 
 class GraphConv(nn.Module):
-    def __init__(self, c_in, c_out, gso, bias):
+    def __init__(self, c_in, c_out, bias):
         super(GraphConv, self).__init__()
         self.c_in = c_in
         self.c_out = c_out
-        self.gso = gso
         self.weight = nn.Parameter(torch.FloatTensor(c_in, c_out))
         if bias:
             self.bias = nn.Parameter(torch.FloatTensor(c_out))
@@ -194,11 +192,11 @@ class GraphConv(nn.Module):
             bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
             init.uniform_(self.bias, -bound, bound)
 
-    def forward(self, x):
+    def forward(self, x, gso):
         #bs, c_in, ts, n_vertex = x.shape
         x = torch.permute(x, (0, 2, 3, 1))
 
-        first_mul = torch.einsum('hi,btij->bthj', self.gso, x)
+        first_mul = torch.einsum('hi,btij->bthj', gso, x)
         second_mul = torch.einsum('bthi,ij->bthj', first_mul, self.weight)
 
         if self.bias is not None:
@@ -209,25 +207,24 @@ class GraphConv(nn.Module):
         return graph_conv
 
 class GraphConvLayer(nn.Module):
-    def __init__(self, graph_conv_type, c_in, c_out, Ks, gso, bias):
+    def __init__(self, graph_conv_type, c_in, c_out, Ks, bias):
         super(GraphConvLayer, self).__init__()
         self.graph_conv_type = graph_conv_type
         self.c_in = c_in
         self.c_out = c_out
         self.align = Align(c_in, c_out)
         self.Ks = Ks
-        self.gso = gso
         if self.graph_conv_type == 'cheb_graph_conv':
-            self.cheb_graph_conv = ChebGraphConv(c_out, c_out, Ks, gso, bias)
+            self.cheb_graph_conv = ChebGraphConv(c_out, c_out, Ks, bias)
         elif self.graph_conv_type == 'graph_conv':
-            self.graph_conv = GraphConv(c_out, c_out, gso, bias)
+            self.graph_conv = GraphConv(c_out, c_out, bias)
 
-    def forward(self, x):
+    def forward(self, x, gso):
         x_gc_in = self.align(x)
         if self.graph_conv_type == 'cheb_graph_conv':
-            x_gc = self.cheb_graph_conv(x_gc_in)
+            x_gc = self.cheb_graph_conv(x_gc_in, gso)
         elif self.graph_conv_type == 'graph_conv':
-            x_gc = self.graph_conv(x_gc_in)
+            x_gc = self.graph_conv(x_gc_in, gso)
         x_gc = x_gc.permute(0, 3, 1, 2)
         x_gc_out = torch.add(x_gc, x_gc_in)
 
@@ -241,18 +238,18 @@ class STConvBlock(nn.Module):
     # N: Layer Normolization
     # D: Dropout
 
-    def __init__(self, Kt, Ks, n_vertex, last_block_channel, channels, act_func, graph_conv_type, gso, bias, droprate):
+    def __init__(self, Kt, Ks, n_vertex, last_block_channel, channels, act_func, graph_conv_type, bias, droprate):
         super(STConvBlock, self).__init__()
         self.tmp_conv1 = TemporalConvLayer(Kt, last_block_channel, channels[0], n_vertex, act_func)
-        self.graph_conv = GraphConvLayer(graph_conv_type, channels[0], channels[1], Ks, gso, bias)
+        self.graph_conv = GraphConvLayer(graph_conv_type, channels[0], channels[1], Ks, bias)
         self.tmp_conv2 = TemporalConvLayer(Kt, channels[1], channels[2], n_vertex, act_func)
         self.tc2_ln = nn.LayerNorm([n_vertex, channels[2]])
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(p=droprate)
 
-    def forward(self, x):
+    def forward(self, x, gso):
         x = self.tmp_conv1(x)
-        x = self.graph_conv(x)
+        x = self.graph_conv(x, gso)
         x = self.relu(x)
         x = self.tmp_conv2(x)
         x = self.tc2_ln(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
