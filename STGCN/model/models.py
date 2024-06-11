@@ -42,6 +42,8 @@ class STGCNChebGraphConv(nn.Module):
             self.leaky_relu = nn.LeakyReLU()
             self.silu = nn.SiLU()
             self.dropout = nn.Dropout(p=args.droprate)
+        
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x, gso):
         for l in range(len(self.st_blocks)):
@@ -52,6 +54,7 @@ class STGCNChebGraphConv(nn.Module):
             x = self.fc1(x.permute(0, 2, 3, 1))
             x = self.relu(x)
             x = self.fc2(x).permute(0, 3, 1, 2)
+            x = self.sigmoid(x)
         
         return x
 
@@ -96,6 +99,8 @@ class STGCNGraphConv(nn.Module):
             self.silu = nn.SiLU()
             self.do = nn.Dropout(p=args.droprate)
 
+        self.sigmoid = nn.Sigmoid()
+
     def forward(self, x, gso):
         x = self.st_blocks(x)
         if self.Ko > 1:
@@ -104,5 +109,6 @@ class STGCNGraphConv(nn.Module):
             x = self.fc1(x.permute(0, 2, 3, 1))
             x = self.relu(x)
             x = self.fc2(x).permute(0, 3, 1, 2)
+            x = self.sigmoid(x)
         
         return x

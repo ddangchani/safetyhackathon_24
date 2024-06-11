@@ -25,15 +25,19 @@ from model.models import STGCNChebGraphConv, STGCNGraphConv
 from utils import calc_gso, calc_chebynet_gso, evaluate_metric, evaluate_model, EarlyStopping, set_env, data_transform
 
 # Load data
-adj_mx = pd.read_csv('data/PeMSD7_W_228.csv', header=None)
-adj_mx = np.array(adj_mx)
+adj_mx = np.load('data/adj.npy')
 adj_mx = torch.from_numpy(adj_mx)
+print(f'adj_mx.shape: {adj_mx.shape}')
 
-data = pd.read_csv('data/PeMSD7_V_228.csv', header=None)
-data = np.array(data)
-data = torch.from_numpy(data)
+data_speed = pd.read_pickle('data/pivoted_speed.pkl') # temp times node
+data_flood = pd.read_pickle('data/pivoted_flood.pkl') # temp times node
 
-# Arguments
+# Convert data to PyTorch tensors
+data_speed = torch.from_numpy(data_speed.values)
+data_flood = torch.from_numpy(data_flood.values)
+
+# Ensure that the tensors have the same shape
+assert data_speed.shape == data_flood.shape
 
 def get_parameters():
     parser = argparse.ArgumentParser(description='STGCN')
@@ -102,21 +106,21 @@ gso = gso.toarray()
 gso = gso.astype(dtype=np.float32)
 gso = torch.from_numpy(gso).to(device)
 
-data_col = data.shape[0]
+data_col = data_speed.shape[0]
 val_and_test_rate = 0.15
 len_val = int(math.floor(data_col * val_and_test_rate))
 len_test = int(math.floor(data_col * val_and_test_rate))
 len_train = int(data_col - len_val - len_test)
 
-train, val, test = data[:len_train], data[len_train: len_train + len_val], data[-len_test:]
+train, val, test = data_speed[:len_train], data_speed[len_train: len_train + len_val], data_speed[-len_test:]
 scaler = preprocessing.StandardScaler() # Standardize features by removing the mean and scaling to unit variance
 train = scaler.fit_transform(train)
 val = scaler.fit_transform(val)
 test = scaler.fit_transform(test)
 
-x_train, y_train = data_transform(train, args.n_his, args.n_pred, device)
-x_val, y_val = data_transform(val, args.n_his, args.n_pred, device)
-x_test, y_test = data_transform(test, args.n_his, args.n_pred, device)
+x_train, y_train = data_transform(train, data_flood[:len_train], args.n_his, args.n_pred, device)
+x_val, y_val = data_transform(val, data_flood[len_train: len_train + len_val], args.n_his, args.n_pred, device)
+x_test, y_test = data_transform(test, data_flood[-len_test:], args.n_his, args.n_pred, device)
 
 train_data = TensorDataset(x_train, y_train)
 train_iter = DataLoader(dataset=train_data, batch_size=args.batch_size, shuffle=False)
@@ -124,6 +128,7 @@ val_data = TensorDataset(x_val, y_val)
 val_iter = DataLoader(dataset=val_data, batch_size=args.batch_size, shuffle=False)
 test_data = TensorDataset(x_test, y_test)
 test_iter = DataLoader(dataset=test_data, batch_size=args.batch_size, shuffle=False)
+
 
 # Model
 
@@ -177,24 +182,26 @@ def val(model, val_iter):
 @torch.no_grad() 
 def test(zscore, loss, model, test_iter, args):
     model.eval()
-    test_MSE = evaluate_model(model, loss, test_iter)
-    test_MAE, test_RMSE, test_WMAPE = evaluate_metric(model, test_iter, zscore)
+    test_MSE = evaluate_model(model, loss, test_iter, gso)
+    test_MAE, test_RMSE, test_WMAPE = evaluate_metric(model, test_iter, zscore, gso)
     print(f'Dataset test MSE: {test_MSE:.6f}, MAE: {test_MAE:.6f}, RMSE: {test_RMSE:.6f}, WMAPE: {test_WMAPE:.6f}')
 
 # Print input data shape
 print(f'x_train.shape: {x_train.shape}')
 
 
-# if __name__ == '__main__':
+if __name__ == '__main__':
 
-#     # Log
-#     logging.basicConfig(level=logging.INFO)
+    # Log
+    logging.basicConfig(level=logging.INFO)
 
-#     # Training
-#     train(loss, args, optimizer, scheduler, early_stopping, model, train_iter, val_iter)
+    # Training
+    train(loss, args, optimizer, scheduler, early_stopping, model, train_iter, val_iter)
 
-#     # Testing
-#     test(scaler, loss, model, test_iter, args)
+    # Testing
+    test(scaler, loss, model, test_iter, args)
 
-# # Save model
-# torch.save(model.state_dict(), 'model.pth')
+
+
+# Save model
+torch.save(model.state_dict(), 'model.pth')
