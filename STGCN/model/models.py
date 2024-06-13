@@ -85,8 +85,8 @@ class STGCNGraphConv(nn.Module):
         super(STGCNGraphConv, self).__init__()
         modules = []
         for l in range(len(blocks) - 3):
-            modules.append(layers.STConvBlock(args.Kt, args.Ks, n_vertex, blocks[l][-1], blocks[l+1], args.act_func, args.graph_conv_type, args.gso, args.enable_bias, args.droprate))
-        self.st_blocks = nn.Sequential(*modules)
+            modules.append(layers.STConvBlock(args.Kt, args.Ks, n_vertex, blocks[l][-1], blocks[l+1], args.act_func, args.graph_conv_type, args.enable_bias, args.droprate))
+        self.st_blocks = nn.ModuleList(modules)
         Ko = args.n_his - (len(blocks) - 3) * 2 * (args.Kt - 1)
         self.Ko = Ko
         if self.Ko > 1:
@@ -102,7 +102,8 @@ class STGCNGraphConv(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x, gso):
-        x = self.st_blocks(x)
+        for l in range(len(self.st_blocks)):
+            x = self.st_blocks[l](x, gso)
         if self.Ko > 1:
             x = self.output(x)
         elif self.Ko == 0:
@@ -112,3 +113,18 @@ class STGCNGraphConv(nn.Module):
             x = self.sigmoid(x)
         
         return x
+
+class DualInputSTGCN(nn.Module):
+    def __init__(self, stgcn1, stgcn2):
+        super(DualInputSTGCN, self).__init__()
+        self.stgcn1 = stgcn1
+        self.stgcn2 = stgcn2
+        # Add any additional layers you need to combine the outputs of the two STGCNs
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x1, x2, gso):
+        out1 = self.stgcn1(x1, gso)
+        out2 = self.stgcn2(x2, gso)
+        # Combine out1 and out2 in some way
+        out = self.sigmoid(out1 + out2)
+        return out

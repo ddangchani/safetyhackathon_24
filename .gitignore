@@ -166,3 +166,7 @@ cython_debug/
 .DS_Store
 
 Z_KAIS_TL_SPRD_MANAGE_11.*
+TL_SPRD_RW_11.*
+*/.DS_Store
+
+data/*

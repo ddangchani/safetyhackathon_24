@@ -89,12 +89,12 @@ def cnv_sparse_mat_to_coo_tensor(sp_mat, device):
     else:
         raise TypeError(f'ERROR: The dtype of {sp_mat} is {sp_mat.dtype}, not been applied in implemented models.')
 
-def evaluate_model(model, loss, data_iter, gso):
+def evaluate_model(model, loss, data_iter1, data_iter2, gso): # dual input
     model.eval()
     l_sum, n = 0.0, 0
     with torch.no_grad():
-        for x, y in data_iter:
-            y_pred = model(x, gso).view(len(x), -1)
+        for (x1, y1), (x2, y2) in zip(data_iter1, data_iter2):
+            y_pred = model(x1, x2, gso).view(len(x1), -1)
             l = loss(y_pred, y)
             l_sum += l.item() * y.shape[0]
             n += y.shape[0]
@@ -102,13 +102,13 @@ def evaluate_model(model, loss, data_iter, gso):
         
         return mse
 
-def evaluate_metric(model, data_iter, scaler, gso):
+def evaluate_metric(model, data_iter1, data_iter2, scaler, gso):
     model.eval()
     with torch.no_grad():
         mae, sum_y, mape, mse = [], [], [], []
-        for x, y in data_iter:
+        for (x, y), (x_flood, y_flood) in zip(data_iter1, data_iter2):
             y = scaler.inverse_transform(y.cpu().numpy()).reshape(-1)
-            y_pred = scaler.inverse_transform(model(x, gso).view(len(x), -1).cpu().numpy()).reshape(-1)
+            y_pred = scaler.inverse_transform(model(x, x_flood, gso).view(len(x), -1).cpu().numpy()).reshape(-1)
             d = np.abs(y - y_pred)
             mae += d.tolist()
             sum_y += y.tolist()
@@ -188,11 +188,11 @@ def set_env(seed):
     torch.backends.cudnn.deterministic = True
     # torch.use_deterministic_algorithms(True)
 
-def data_transform(data_input, data_target, n_his, n_pred, device):
+def data_transform(data, n_his, n_pred, device):
     # produce data slices for x_data and y_data
 
-    n_vertex = data_input.shape[1]
-    len_record = data_input.shape[0]
+    n_vertex = data.shape[1]
+    len_record = data.shape[0]
     num = len_record - n_his - n_pred
     
     x = np.zeros([num, 1, n_his, n_vertex])
@@ -201,7 +201,7 @@ def data_transform(data_input, data_target, n_his, n_pred, device):
     for i in range(num):
         head = i
         tail = i + n_his
-        x[i, :, :, :] = data_input[head: tail].reshape(1, n_his, n_vertex) # x : (num, 1, n_his, n_vertex)
-        y[i] = data_target[tail + n_pred - 1] # y : (num, n_vertex)
+        x[i, :, :, :] = data[head: tail].reshape(1, n_his, n_vertex) # x : (num, 1, n_his, n_vertex)
+        y[i] = data[tail + n_pred - 1] # y : (num, n_vertex)
 
     return torch.Tensor(x).to(device), torch.Tensor(y).to(device)

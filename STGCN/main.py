@@ -21,11 +21,11 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.utils.data import DataLoader, TensorDataset
 
-from model.models import STGCNChebGraphConv, STGCNGraphConv
+from model.models import STGCNChebGraphConv, STGCNGraphConv, DualInputSTGCN
 from utils import calc_gso, calc_chebynet_gso, evaluate_metric, evaluate_model, EarlyStopping, set_env, data_transform
 
 # Load data
-adj_mx = np.load('data/adj.npy')
+adj_mx = np.load('data/adj_mx.npy')
 adj_mx = torch.from_numpy(adj_mx)
 print(f'adj_mx.shape: {adj_mx.shape}')
 
@@ -47,7 +47,7 @@ def get_parameters():
     parser.add_argument('--n_pred', type=int, default=3, help='the number of time interval for predcition, default as 3')
     parser.add_argument('--time_intvl', type=int, default=5, help='time interval, default as 5')
     parser.add_argument('--Kt', type=int, default=3, help='kernel size of temporal convolution')
-    parser.add_argument('--stblock_num', type=int, default=2, help='number of ST-Conv blocks')
+    parser.add_argument('--stblock_num', type=int, default=1, help='number of ST-Conv blocks')
     parser.add_argument('--act_func', type=str, default='glu', choices=['glu', 'gtu'])
     parser.add_argument('--Ks', type=int, default=3, choices=[3, 2], help='kernel size of spatial convolution')
     parser.add_argument('--graph_conv_type', type=str, default='cheb_graph_conv', choices=['cheb_graph_conv', 'graph_conv'])
@@ -112,22 +112,38 @@ len_val = int(math.floor(data_col * val_and_test_rate))
 len_test = int(math.floor(data_col * val_and_test_rate))
 len_train = int(data_col - len_val - len_test)
 
-train, val, test = data_speed[:len_train], data_speed[len_train: len_train + len_val], data_speed[-len_test:]
+train_speed, val_speed, test_speed = data_speed[:len_train], data_speed[len_train: len_train + len_val], data_speed[-len_test:]
+train_flood, val_flood, test_flood = data_flood[:len_train], data_flood[len_train: len_train + len_val], data_flood[-len_test:]
 scaler = preprocessing.StandardScaler() # Standardize features by removing the mean and scaling to unit variance
-train = scaler.fit_transform(train)
-val = scaler.fit_transform(val)
-test = scaler.fit_transform(test)
+train_speed = scaler.fit_transform(train_speed)
+val_speed = scaler.transform(val_speed)
+test_speed = scaler.transform(test_speed)
 
-x_train, y_train = data_transform(train, data_flood[:len_train], args.n_his, args.n_pred, device)
-x_val, y_val = data_transform(val, data_flood[len_train: len_train + len_val], args.n_his, args.n_pred, device)
-x_test, y_test = data_transform(test, data_flood[-len_test:], args.n_his, args.n_pred, device)
+train_flood = scaler.fit_transform(train_flood)
+val_flood = scaler.transform(val_flood)
+test_flood = scaler.transform(test_flood)
 
-train_data = TensorDataset(x_train, y_train)
-train_iter = DataLoader(dataset=train_data, batch_size=args.batch_size, shuffle=False)
-val_data = TensorDataset(x_val, y_val)
-val_iter = DataLoader(dataset=val_data, batch_size=args.batch_size, shuffle=False)
-test_data = TensorDataset(x_test, y_test)
-test_iter = DataLoader(dataset=test_data, batch_size=args.batch_size, shuffle=False)
+x_train_speed, y_train_speed = data_transform(train_speed, args.n_his, args.n_pred, device)
+x_val_speed, y_val_speed = data_transform(val_speed, args.n_his, args.n_pred, device)
+x_test_speed, y_test_speed = data_transform(test_speed, args.n_his, args.n_pred, device)
+
+x_train_flood, y_train_flood = data_transform(train_flood, args.n_his, args.n_pred, device)
+x_val_flood, y_val_flood = data_transform(val_flood, args.n_his, args.n_pred, device)
+x_test_flood, y_test_flood = data_transform(test_flood, args.n_his, args.n_pred, device)
+
+train_data_speed = TensorDataset(x_train_speed, y_train_speed)
+train_iter_speed = DataLoader(dataset=train_data_speed, batch_size=args.batch_size, shuffle=False)
+val_data_speed = TensorDataset(x_val_speed, y_val_speed)
+val_iter_speed = DataLoader(dataset=val_data_speed, batch_size=args.batch_size, shuffle=False)
+test_data_speed = TensorDataset(x_test_speed, y_test_speed)
+test_iter_speed = DataLoader(dataset=test_data_speed, batch_size=args.batch_size, shuffle=False)
+
+train_data_flood = TensorDataset(x_train_flood, y_train_flood)
+train_iter_flood = DataLoader(dataset=train_data_flood, batch_size=args.batch_size, shuffle=False)
+val_data_flood = TensorDataset(x_val_flood, y_val_flood)
+val_iter_flood = DataLoader(dataset=val_data_flood, batch_size=args.batch_size, shuffle=False)
+test_data_flood = TensorDataset(x_test_flood, y_test_flood)
+test_iter_flood = DataLoader(dataset=test_data_flood, batch_size=args.batch_size, shuffle=False)
 
 
 # Model
@@ -135,30 +151,30 @@ test_iter = DataLoader(dataset=test_data, batch_size=args.batch_size, shuffle=Fa
 loss = nn.MSELoss()
 early_stopping = EarlyStopping(patience=args.patience)
 
-if args.graph_conv_type == 'cheb_graph_conv':
-    model = STGCNChebGraphConv(args, blocks, n_vertex).to(device)
-else:
-    model = STGCNGraphConv(args, blocks, n_vertex).to(device)
+stgcn1 = STGCNChebGraphConv(args, blocks, n_vertex).to(device)
+stgcn2 = STGCNGraphConv(args, blocks, n_vertex).to(device)
+
+model = DualInputSTGCN(stgcn1, stgcn2).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay_rate)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
 
 # Training
 
-def train(loss, args, optimizer, scheduler, es, model, train_iter, val_iter):
+def train(loss, args, optimizer, scheduler, es, model, train_iter_speed, train_iter_flood, val_iter_speed, val_iter_flood):
     for epoch in range(args.epochs):
         l_sum, n = 0.0, 0  # 'l_sum' is epoch sum loss, 'n' is epoch instance number
         model.train()
-        for x, y in tqdm(train_iter):
-            y_pred = model(x, gso).view(len(x), -1)  # [batch_size, num_nodes]
-            l = loss(y_pred, y)
+        for (x, y), (x_flood, y_flood) in zip(tqdm(train_iter_speed), train_iter_flood):
+            y_pred = model(x, x_flood, gso).view(len(x), -1)  # [batch_size, num_nodes]
+            l = loss(y_pred, y_flood)
             optimizer.zero_grad()
             l.backward()
             optimizer.step()
             l_sum += l.item() * y.shape[0]
             n += y.shape[0]
         scheduler.step()
-        val_loss = val(model, val_iter)
+        val_loss = val(model, val_iter_speed, val_iter_flood)
         # GPU memory usage
         gpu_mem_alloc = torch.cuda.max_memory_allocated() / 1000000 if torch.cuda.is_available() else 0
         print('Epoch: {:03d} | Lr: {:.20f} |Train loss: {:.6f} | Val loss: {:.6f} | GPU occupy: {:.6f} MiB'.\
@@ -168,26 +184,30 @@ def train(loss, args, optimizer, scheduler, es, model, train_iter, val_iter):
             print('Early stopping.')
             break
 
+        if KeyboardInterrupt:
+            print('KeyboardInterrupt')
+            break
+
 @torch.no_grad()
-def val(model, val_iter):
+def val(model, val_iter_speed, val_iter_flood):
     model.eval()
     l_sum, n = 0.0, 0
-    for x, y in val_iter:
-        y_pred = model(x, gso).view(len(x), -1)
-        l = loss(y_pred, y)
+    for (x, y), (x_flood, y_flood) in zip(val_iter_speed, val_iter_flood):
+        y_pred = model(x, x_flood, gso).view(len(x), -1)
+        l = loss(y_pred, y_flood)
         l_sum += l.item() * y.shape[0]
         n += y.shape[0]
-    return torch.tensor(l_sum / n)
+    return l_sum / n
 
 @torch.no_grad() 
-def test(zscore, loss, model, test_iter, args):
+def test(zscore, loss, model, test_iter1, test_iter2, gso):
     model.eval()
-    test_MSE = evaluate_model(model, loss, test_iter, gso)
-    test_MAE, test_RMSE, test_WMAPE = evaluate_metric(model, test_iter, zscore, gso)
+    test_MSE = evaluate_model(model, loss, test_iter1, test_iter2, zscore, gso)
+    test_MAE, test_RMSE, test_WMAPE = evaluate_metric(model, test_iter1, test_iter2, zscore, gso)
     print(f'Dataset test MSE: {test_MSE:.6f}, MAE: {test_MAE:.6f}, RMSE: {test_RMSE:.6f}, WMAPE: {test_WMAPE:.6f}')
 
 # Print input data shape
-print(f'x_train.shape: {x_train.shape}')
+print(f'x_train.shape: {x_train_flood.shape}')
 
 
 if __name__ == '__main__':
@@ -196,10 +216,10 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
 
     # Training
-    train(loss, args, optimizer, scheduler, early_stopping, model, train_iter, val_iter)
+    train(loss, args, optimizer, scheduler, early_stopping, model, train_iter_speed, train_iter_flood, val_iter_speed, val_iter_flood)
 
     # Testing
-    test(scaler, loss, model, test_iter, args)
+    test(scaler, loss, model, test_iter_speed, test_iter_flood, gso)
 
 
 
